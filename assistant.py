@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
+import importlib
 import json
 import os
 import platform
+import re
 import secrets
 import shutil
 import sqlite3
@@ -36,6 +39,15 @@ DB_LOCK = threading.RLock()
 RUN_LOCK = threading.Lock()
 BACKUP_LOCK = threading.Lock()
 DIRTY = threading.Event()
+VOICE_LOCK = threading.Lock()
+VOICE_CACHE = None
+NEURAL_FALLBACK = [
+    {"name": "pt-BR-ThalitaMultilingualNeural", "label": "Thalita · Brasil · neural"},
+    {"name": "pt-BR-FranciscaNeural", "label": "Francisca · Brasil · neural"},
+    {"name": "pt-PT-RaquelNeural", "label": "Raquel · Portugal · neural"},
+    {"name": "en-US-AvaMultilingualNeural", "label": "Ava · multilíngue · neural"},
+    {"name": "en-US-EmmaMultilingualNeural", "label": "Emma · multilíngue · neural"},
+]
 STARTUP = Path(os.environ.get("APPDATA", str(Path.home() / "AppData" / "Roaming"))) / "Microsoft/Windows/Start Menu/Programs/Startup/Astra.cmd"
 
 
@@ -133,6 +145,70 @@ def read_status(name: str) -> dict:
         return json.loads((DATA / name).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
+
+
+def edge_module():
+    try:
+        return importlib.import_module("edge_tts")
+    except ImportError:
+        with VOICE_LOCK:
+            try:
+                return importlib.import_module("edge_tts")
+            except ImportError:
+                python = Path(sys.executable).with_name("python.exe")
+                if not python.is_file():
+                    python = Path(sys.executable)
+                proc = subprocess.run([str(python), "-m", "pip", "install", "--user", "edge-tts==7.3.1"],
+                                      capture_output=True, text=True, timeout=180,
+                                      creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                if proc.returncode:
+                    raise RuntimeError("Não foi possível instalar o motor de voz neural: " + proc.stderr[-600:])
+                importlib.invalidate_caches()
+                return importlib.import_module("edge_tts")
+
+
+def neural_voices() -> list[dict]:
+    global VOICE_CACHE
+    if VOICE_CACHE is not None:
+        return VOICE_CACHE
+    try:
+        voices = asyncio.run(edge_module().list_voices())
+        names = {voice.get("ShortName") for voice in voices}
+        available = [voice for voice in NEURAL_FALLBACK if voice["name"] in names]
+        if available:
+            VOICE_CACHE = available
+            return VOICE_CACHE
+    except Exception:
+        pass
+    return NEURAL_FALLBACK
+
+
+def synthesize_voice(text: str, name: str, rate: int, pitch: int) -> bytes:
+    if name not in {item["name"] for item in neural_voices()}:
+        raise ValueError("Voz neural desconhecida")
+    clean = re.sub(r"\[(.*?)\]\([^)]*\)", r"\1", text)
+    clean = re.sub(r"[`*_#]", "", clean).strip()
+    if not clean or len(clean) > 3500:
+        raise ValueError("Texto vazio ou longo demais para a voz")
+    rate = max(-30, min(50, int(rate)))
+    pitch = max(-20, min(20, int(pitch)))
+
+    async def generate():
+        communicate = edge_module().Communicate(clean, name, rate=f"{rate:+d}%", pitch=f"{pitch:+d}Hz")
+        chunks = []
+        size = 0
+        async for chunk in communicate.stream():
+            if chunk.get("type") == "audio":
+                part = chunk["data"]
+                size += len(part)
+                if size > 8_000_000:
+                    raise ValueError("Áudio gerado maior que 8 MB")
+                chunks.append(part)
+        if not chunks:
+            raise RuntimeError("O serviço de voz não retornou áudio")
+        return b"".join(chunks)
+
+    return asyncio.run(generate())
 
 
 def maintenance():
@@ -435,6 +511,15 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def send_audio(self, data: bytes):
+        self.send_response(200)
+        self.send_header("Content-Type", "audio/mpeg")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
     def authorized(self):
         origin = self.headers.get("Origin", "")
         expected = f"http://127.0.0.1:{self.server.server_port}"
@@ -472,6 +557,8 @@ class Handler(BaseHTTPRequestHandler):
                             "actions": rows("SELECT * FROM actions ORDER BY id DESC LIMIT 15"),
                             "jobs": rows("SELECT * FROM jobs ORDER BY id DESC"),
                             "system": disk_report()})
+        elif self.path == "/api/voices" and self.authorized():
+            self.send_json({"voices": neural_voices()})
         else:
             self.send_json({"error": "Não encontrado"}, 404)
 
@@ -488,6 +575,15 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"error": "Acesso negado"}, 403)
         try:
             body = self.body()
+            if self.path == "/api/tts":
+                try:
+                    audio = synthesize_voice(str(body.get("text", "")), str(body.get("voice", "")),
+                                             int(body.get("rate", 0)), int(body.get("pitch", 0)))
+                    return self.send_audio(audio)
+                except ValueError:
+                    raise
+                except Exception as exc:
+                    return self.send_json({"error": str(exc)}, 502)
             if self.path == "/api/chat":
                 prompt = str(body.get("prompt", "")).strip()
                 if not prompt or len(prompt) > 10_000:

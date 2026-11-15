@@ -40,18 +40,20 @@ class BackupUpdateTests(unittest.TestCase):
 
     def test_update_stage_accepts_only_expected_files(self):
         with tempfile.TemporaryDirectory() as root:
+            current_version = updater.installed()["version"]
+            next_version = "99.0.0"
             archive = io.BytesIO()
             with zipfile.ZipFile(archive, "w") as package:
                 for name in updater.APP_FILES:
                     content = (updater.ROOT / name).read_bytes()
                     if name == "version.json":
-                        content = json.dumps({"version": "0.1.1", "repository": "WeikathLP/astra-assistente"}).encode()
+                        content = json.dumps({"version": next_version, "repository": "WeikathLP/astra-assistente"}).encode()
                     package.writestr("repo-123/" + name, content)
             payload = archive.getvalue()
             with patch.object(updater, "DATA", Path(root)), patch.object(updater, "open_url", return_value=io.BytesIO(payload)):
-                staged = updater.stage_release({"version": "0.1.1", "url": "https://api.github.com/example"})
+                staged = updater.stage_release({"version": next_version, "url": "https://api.github.com/example"})
             self.assertTrue((staged / "assistant.py").is_file())
-            self.assertEqual(json.loads((staged / "version.json").read_text())["version"], "0.1.1")
+            self.assertEqual(json.loads((staged / "version.json").read_text())["version"], next_version)
             install = Path(root) / "install"
             for name in updater.APP_FILES:
                 destination = install / name
@@ -59,8 +61,8 @@ class BackupUpdateTests(unittest.TestCase):
                 shutil.copy2(updater.ROOT / name, destination)
             with patch.object(updater, "DATA", Path(root)), patch.object(updater, "ROOT", install), patch.object(updater, "VERSION_FILE", install / "version.json"):
                 rollback = updater.apply_staged(staged)
-            self.assertEqual(json.loads((install / "version.json").read_text())["version"], "0.1.1")
-            self.assertEqual(json.loads((rollback / "version.json").read_text())["version"], "0.1.0")
+            self.assertEqual(json.loads((install / "version.json").read_text())["version"], next_version)
+            self.assertEqual(json.loads((rollback / "version.json").read_text())["version"], current_version)
 
 
 if __name__ == "__main__":

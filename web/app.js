@@ -71,22 +71,71 @@ function item(title, subtitle, removeFn) {
 async function refresh() { try { state = await api('/api/state'); render(); } catch (error) { toast(error.message); } }
 async function remove(kind,id) { try { await api(`/api/${kind}/delete`,{id}); await refresh(); } catch (e) {toast(e.message);} }
 
-function speak(text) {
-  if (!$('speak').checked || !('speechSynthesis' in window)) return;
-  speechSynthesis.cancel();
+let neuralVoices = [];
+let currentAudio = null;
+let currentAudioUrl = null;
+let speechRequestId = 0;
+
+function browserSpeak(text, voiceUri) {
+  if (!('speechSynthesis' in window)) { toast('Voz do navegador indisponível.'); return; }
   const utterance = new SpeechSynthesisUtterance(text.slice(0,3500));
-  utterance.lang = 'pt-BR'; utterance.rate = Number($('rate').value);
-  const selected = speechSynthesis.getVoices().find(v => v.voiceURI === $('voice').value);
+  utterance.lang = 'pt-BR';
+  utterance.rate = Number($('rate').value);
+  utterance.pitch = 1 + Number($('pitch').value) / 100;
+  const selected = speechSynthesis.getVoices().find(v => v.voiceURI === voiceUri);
   if (selected) utterance.voice = selected;
   speechSynthesis.speak(utterance);
 }
 
-function loadVoices() {
-  if (!('speechSynthesis' in window)) { $('voice').append(el('option','', 'Voz indisponível')); return; }
-  const voices = speechSynthesis.getVoices().sort((a,b) => Number(b.lang.startsWith('pt')) - Number(a.lang.startsWith('pt')));
-  $('voice').replaceChildren(...voices.map(v => {const o=el('option','',`${v.name} (${v.lang})`);o.value=v.voiceURI;return o;}));
-  if (prefs.voice) $('voice').value = prefs.voice;
-  else { const pt=voices.find(v=>v.lang.startsWith('pt')); if(pt) $('voice').value=pt.voiceURI; }
+async function speak(text, force = false) {
+  if (!force && !$('speak').checked) return;
+  const requestId = ++speechRequestId;
+  if ('speechSynthesis' in window) speechSynthesis.cancel();
+  if (currentAudio) { currentAudio.pause(); currentAudio = null; }
+  if (currentAudioUrl) { URL.revokeObjectURL(currentAudioUrl); currentAudioUrl = null; }
+  const clean = text.replace(/\[([^\]]+)\]\([^)]*\)/g, '$1').replace(/[`*_#]/g, '').slice(0,3500);
+  const selected = $('voice').value;
+  if (!selected.startsWith('edge:')) return browserSpeak(clean, selected.replace(/^browser:/, ''));
+  try {
+    const response = await fetch('/api/tts', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json', 'X-Astra-Token': token},
+      body: JSON.stringify({text: clean, voice: selected.slice(5),
+                            rate: Math.round((Number($('rate').value) - 1) * 100),
+                            pitch: Number($('pitch').value)})
+    });
+    if (!response.ok) { const problem = await response.json(); throw new Error(problem.error || 'Falha na voz neural'); }
+    const blob = await response.blob();
+    if (requestId !== speechRequestId) return;
+    const audioUrl = URL.createObjectURL(blob);
+    const audio = new Audio(audioUrl);
+    currentAudioUrl = audioUrl;
+    currentAudio = audio;
+    audio.onended = () => { URL.revokeObjectURL(audioUrl); if (currentAudio === audio) { currentAudioUrl = null; currentAudio = null; } };
+    await currentAudio.play();
+  } catch (error) {
+    if (requestId !== speechRequestId) return;
+    toast(`Voz neural indisponível: ${error.message}. Usando voz do navegador.`);
+    browserSpeak(clean, '');
+  }
+}
+
+function renderVoiceOptions() {
+  const previous = prefs.voice || (neuralVoices.length ? 'edge:pt-BR-ThalitaMultilingualNeural' : $('voice').value);
+  const neural = el('optgroup'); neural.label = 'VOZES NEURAIS ONLINE';
+  neuralVoices.forEach(v => {const option=el('option','',v.label);option.value=`edge:${v.name}`;neural.append(option);});
+  const local = el('optgroup'); local.label = 'VOZES DO NAVEGADOR';
+  const browsers = 'speechSynthesis' in window ? speechSynthesis.getVoices().filter(v=>v.lang.startsWith('pt')) : [];
+  browsers.forEach(v => {const option=el('option','',`${v.name} (${v.lang})`);option.value=`browser:${v.voiceURI}`;local.append(option);});
+  $('voice').replaceChildren(neural,local);
+  if (previous && [...$('voice').options].some(o=>o.value===previous)) $('voice').value=previous;
+  else if (neuralVoices.length) $('voice').value=`edge:${neuralVoices[0].name}`;
+}
+
+async function loadNeuralVoices() {
+  try { neuralVoices = (await api('/api/voices')).voices; }
+  catch (error) { neuralVoices = []; }
+  renderVoiceOptions();
 }
 
 document.querySelectorAll('.tabs button').forEach(button => button.addEventListener('click', () => {
@@ -110,11 +159,12 @@ $('save-model').addEventListener('click',async()=>{try{await api('/api/settings'
 $('startup').addEventListener('change',async()=>{try{await api('/api/startup',{enabled:$('startup').checked});await refresh();toast('Início com Windows atualizado.');}catch(e){toast(e.message);await refresh();}});
 $('backup-now').addEventListener('click',async()=>{try{const result=await api('/api/backup',{});await refresh();toast(result.cloud ? 'Backup local e no OneDrive concluído.' : `Backup local feito; OneDrive: ${result.cloud_error || result.error}`);}catch(e){toast(e.message);}});
 $('auto-update').addEventListener('change',async()=>{try{await api('/api/auto-update',{enabled:$('auto-update').checked});await refresh();toast('Atualização automática configurada.');}catch(e){toast(e.message);await refresh();}});
-$('test-voice').addEventListener('click',()=>speak('Olá. Eu sou a Astra, seu assistente pessoal.'));
-$('voice').addEventListener('change',saveVoice);$('rate').addEventListener('input',()=>{$('rate-label').textContent=`${Number($('rate').value).toFixed(1)}×`;saveVoice();});$('speak').addEventListener('change',saveVoice);
-function saveVoice(){localStorage.setItem('astra-voice',JSON.stringify({voice:$('voice').value,rate:$('rate').value,speak:$('speak').checked}));}
-if(prefs.rate){$('rate').value=prefs.rate;$('rate-label').textContent=`${Number(prefs.rate).toFixed(1)}×`;} if(prefs.speak!==undefined)$('speak').checked=prefs.speak;
-if('speechSynthesis' in window){speechSynthesis.onvoiceschanged=loadVoices;loadVoices();}
+$('test-voice').addEventListener('click',()=>speak('Olá. Eu sou a Astra, seu assistente pessoal. Posso ajudar você hoje?',true));
+$('voice').addEventListener('change',saveVoice);$('rate').addEventListener('input',()=>{$('rate-label').textContent=`${Number($('rate').value).toFixed(1)}×`;saveVoice();});$('pitch').addEventListener('input',()=>{$('pitch-label').textContent=`${Number($('pitch').value)} Hz`;saveVoice();});$('speak').addEventListener('change',saveVoice);
+function saveVoice(){prefs.voice=$('voice').value;prefs.rate=$('rate').value;prefs.pitch=$('pitch').value;prefs.speak=$('speak').checked;localStorage.setItem('astra-voice',JSON.stringify(prefs));}
+if(prefs.rate){$('rate').value=prefs.rate;$('rate-label').textContent=`${Number(prefs.rate).toFixed(1)}×`;} if(prefs.pitch){$('pitch').value=prefs.pitch;$('pitch-label').textContent=`${Number(prefs.pitch)} Hz`;} if(prefs.speak!==undefined)$('speak').checked=prefs.speak;
+if('speechSynthesis' in window){speechSynthesis.onvoiceschanged=renderVoiceOptions;renderVoiceOptions();}
+loadNeuralVoices();
 const Recognition=window.SpeechRecognition||window.webkitSpeechRecognition;
 if(Recognition){const rec=new Recognition();rec.lang='pt-BR';rec.interimResults=false;rec.onresult=e=>{$('prompt').value=e.results[0][0].transcript;$('prompt').focus();};rec.onerror=e=>toast(`Microfone: ${e.error}`);$('mic').addEventListener('click',()=>{try{rec.start();toast('Ouvindo…');}catch(e){toast(e.message);}});}else{$('mic').disabled=true;$('mic').title='Ditado indisponível neste navegador';}
 setInterval(()=>$('clock').textContent=new Date().toLocaleString('pt-BR'),1000);$('clock').textContent=new Date().toLocaleString('pt-BR');
