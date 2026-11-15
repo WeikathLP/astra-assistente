@@ -41,6 +41,8 @@ BACKUP_LOCK = threading.Lock()
 DIRTY = threading.Event()
 VOICE_LOCK = threading.Lock()
 VOICE_CACHE = None
+TTS_LOCK = threading.Lock()
+TTS_SESSIONS = {}
 MIC_LOCK = threading.RLock()
 MIC_DEP_LOCK = threading.Lock()
 TRANSCRIBE_LOCK = threading.Lock()
@@ -188,8 +190,8 @@ def neural_voices() -> list[dict]:
     return NEURAL_FALLBACK
 
 
-def synthesize_voice(text: str, name: str, rate: int, pitch: int) -> bytes:
-    if name not in {item["name"] for item in neural_voices()}:
+def voice_params(text: str, name: str, rate: int, pitch: int) -> tuple[str, str, int, int]:
+    if name not in {item["name"] for item in NEURAL_FALLBACK}:
         raise ValueError("Voz neural desconhecida")
     clean = re.sub(r"\[(.*?)\]\([^)]*\)", r"\1", text)
     clean = re.sub(r"[`*_#]", "", clean).strip()
@@ -197,6 +199,25 @@ def synthesize_voice(text: str, name: str, rate: int, pitch: int) -> bytes:
         raise ValueError("Texto vazio ou longo demais para a voz")
     rate = max(-30, min(50, int(rate)))
     pitch = max(-20, min(20, int(pitch)))
+    return clean, name, rate, pitch
+
+
+def prepare_voice(text: str, name: str, rate: int, pitch: int) -> str:
+    params = voice_params(text, name, rate, pitch)
+    ticket = secrets.token_urlsafe(32)
+    with TTS_LOCK:
+        current = time.monotonic()
+        for key, value in list(TTS_SESSIONS.items()):
+            if value[0] < current:
+                del TTS_SESSIONS[key]
+        if len(TTS_SESSIONS) >= 20:
+            raise ValueError("Muitas solicitações de voz em andamento")
+        TTS_SESSIONS[ticket] = (current + 60, params)
+    return ticket
+
+
+def synthesize_voice(text: str, name: str, rate: int, pitch: int) -> bytes:
+    clean, name, rate, pitch = voice_params(text, name, rate, pitch)
 
     async def generate():
         communicate = edge_module().Communicate(clean, name, rate=f"{rate:+d}%", pitch=f"{pitch:+d}Hz")
@@ -577,6 +598,7 @@ def chat(prompt: str, save=True) -> dict:
             response = request_json(OLLAMA + "/api/chat", {
                 "model": setting("model") or DEFAULT_MODEL,
                 "messages": messages, "tools": TOOLS, "stream": False, "think": False,
+                "keep_alive": "30m",
                 "options": {"temperature": 0.2, "num_ctx": 8192},
             }, timeout=300)
             message = response.get("message", {})
@@ -628,6 +650,7 @@ def scheduler():
 
 class Handler(BaseHTTPRequestHandler):
     server_version = "Astra/0.1"
+    protocol_version = "HTTP/1.1"
 
     def log_message(self, fmt, *args):
         return
@@ -650,6 +673,43 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def send_audio_stream(self, ticket: str):
+        with TTS_LOCK:
+            entry = TTS_SESSIONS.get(ticket)
+            if entry is None or entry[0] < time.monotonic():
+                TTS_SESSIONS.pop(ticket, None)
+                return self.send_json({"error": "Áudio expirado"}, 404)
+            clean, name, rate, pitch = entry[1]
+        self.send_response(200)
+        self.send_header("Content-Type", "audio/mpeg")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Transfer-Encoding", "chunked")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+
+        async def generate():
+            voice = edge_module().Communicate(clean, name, rate=f"{rate:+d}%", pitch=f"{pitch:+d}Hz")
+            total = 0
+            async for item in voice.stream():
+                if item.get("type") != "audio":
+                    continue
+                data = item["data"]
+                total += len(data)
+                if total > 8_000_000:
+                    raise ValueError("Áudio maior que 8 MB")
+                self.wfile.write(f"{len(data):X}\r\n".encode("ascii") + data + b"\r\n")
+                self.wfile.flush()
+            self.wfile.write(b"0\r\n\r\n")
+            self.wfile.flush()
+
+        try:
+            asyncio.run(generate())
+        except (OSError, ConnectionError):
+            self.close_connection = True
+        except Exception as exc:
+            print("Voz neural:", exc, flush=True)
+            self.close_connection = True
+
     def authorized(self):
         origin = self.headers.get("Origin", "")
         expected = f"http://127.0.0.1:{self.server.server_port}"
@@ -663,6 +723,8 @@ class Handler(BaseHTTPRequestHandler):
         return json.loads(self.rfile.read(size) or b"{}")
 
     def do_GET(self):
+        if self.path.startswith("/api/tts/stream/"):
+            return self.send_audio_stream(self.path.removeprefix("/api/tts/stream/"))
         if self.path == "/":
             data = (WEB / "index.html").read_text(encoding="utf-8").replace("__TOKEN__", self.server.token)
             self.send_file(data.encode(), "text/html; charset=utf-8")
@@ -719,6 +781,10 @@ class Handler(BaseHTTPRequestHandler):
                     raise
                 except Exception as exc:
                     return self.send_json({"error": str(exc)}, 502)
+            if self.path == "/api/tts/prepare":
+                ticket = prepare_voice(str(body.get("text", "")), str(body.get("voice", "")),
+                                       int(body.get("rate", 0)), int(body.get("pitch", 0)))
+                return self.send_json({"ticket": ticket})
             if self.path == "/api/microphone/select":
                 selected = str(body.get("id", ""))
                 if selected not in {device["id"] for device in microphones()["devices"]}:

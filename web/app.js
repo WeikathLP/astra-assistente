@@ -119,7 +119,6 @@ async function remove(kind,id) { try { await api(`/api/${kind}/delete`,{id}); aw
 
 let neuralVoices = [];
 let currentAudio = null;
-let currentAudioUrl = null;
 let speechRequestId = 0;
 
 function browserSpeak(text, voiceUri) {
@@ -143,31 +142,37 @@ async function speak(text, force = false) {
   if (audioSource) { audioSource.disconnect(); audioSource = null; }
   audioAnalyser = null;
   if (currentAudio) { currentAudio.pause(); currentAudio = null; }
-  if (currentAudioUrl) { URL.revokeObjectURL(currentAudioUrl); currentAudioUrl = null; }
   const clean = text.replace(/\[([^\]]+)\]\([^)]*\)/g, '$1').replace(/[`*_#]/g, '').slice(0,3500);
   const selected = $('voice').value;
   if (!selected.startsWith('edge:')) return browserSpeak(clean, selected.replace(/^browser:/, ''));
+  let fallbackStarted = false;
   try {
-    const response = await fetch('/api/tts', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json', 'X-Astra-Token': token},
-      body: JSON.stringify({text: clean, voice: selected.slice(5),
-                            rate: Math.round((Number($('rate').value) - 1) * 100),
-                            pitch: Number($('pitch').value)})
+    const prepared = await api('/api/tts/prepare', {
+      text: clean, voice: selected.slice(5),
+      rate: Math.round((Number($('rate').value) - 1) * 100),
+      pitch: Number($('pitch').value)
     });
-    if (!response.ok) { const problem = await response.json(); throw new Error(problem.error || 'Falha na voz neural'); }
-    const blob = await response.blob();
     if (requestId !== speechRequestId) return;
-    const audioUrl = URL.createObjectURL(blob);
+    const audioUrl = `/api/tts/stream/${encodeURIComponent(prepared.ticket)}`;
     const audio = new Audio(audioUrl);
-    currentAudioUrl = audioUrl;
     currentAudio = audio;
     audio.onended = () => {
-      URL.revokeObjectURL(audioUrl);
       if (currentAudio === audio) {
-        currentAudioUrl = null; currentAudio = null;
+        currentAudio = null;
         if (audioSource) { audioSource.disconnect(); audioSource = null; }
         audioAnalyser = null; setCoreState('idle');
+      }
+    };
+    audio.onerror = () => {
+      if (currentAudio !== audio) return;
+      audio.pause();
+      currentAudio = null;
+      if (audioSource) { audioSource.disconnect(); audioSource = null; }
+      audioAnalyser = null;
+      if (!fallbackStarted) {
+        fallbackStarted = true;
+        toast('Voz neural interrompida. Usando voz do navegador.');
+        browserSpeak(clean, '');
       }
     };
     try {
@@ -186,9 +191,10 @@ async function speak(text, force = false) {
       if (audioSource) { audioSource.disconnect(); audioSource.connect(audioContext.destination); }
     }
     await audio.play();
-    setCoreState('speaking');
+    if (!fallbackStarted) setCoreState('speaking');
   } catch (error) {
     if (requestId !== speechRequestId) return;
+    if (fallbackStarted) return;
     toast(`Voz neural indisponível: ${error.message}. Usando voz do navegador.`);
     browserSpeak(clean, '');
   }

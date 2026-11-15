@@ -41,6 +41,7 @@ Para publicar uma nova versão, altere `version.json`, execute os testes, faça 
 - Gravar pelo microfone selecionado em Configurações e transcrever em português no próprio PC. O primeiro uso baixa o modelo Whisper base; clique uma vez para gravar e novamente para transcrever.
 - Visualizar o núcleo central da interface: ele indica quando a Astra escuta, processa e fala; com voz neural, as barras acompanham o áudio reproduzido.
 - Ouvir uma amostra da voz escolhida. O motor de voz online é instalado automaticamente quando necessário.
+- Iniciar a voz neural assim que o primeiro trecho de áudio chega, sem esperar a frase inteira, e manter o modelo Ollama carregado por 30 minutos entre solicitações.
 
 As ações oferecidas pela Astra não exibem confirmação a cada execução. O Windows ainda pode pedir permissão de administrador. A Astra não possui controle completo de mouse/teclado nem exclusão permanente de arquivos nesta versão. As vozes neurais usam o serviço online do Microsoft Edge: o texto escolhido para fala é enviado para gerar o áudio. O modelo Ollama, a memória e a transcrição do microfone continuam locais. Algumas vozes do navegador também podem usar serviços externos.
 
