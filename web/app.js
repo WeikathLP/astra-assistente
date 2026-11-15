@@ -3,6 +3,50 @@ const $ = id => document.getElementById(id);
 let state = null;
 let busy = false;
 const prefs = JSON.parse(localStorage.getItem('astra-voice') || '{}');
+const core = $('astra-core');
+const visualizer = $('voice-visualizer');
+const visualContext = visualizer.getContext('2d');
+const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
+let audioContext = null;
+let audioAnalyser = null;
+let audioSource = null;
+
+function setCoreState(mode) {
+  const labels = {
+    idle: ['PRONTA PARA AJUDAR', 'Pronta para conversar e cuidar do seu computador.'],
+    offline: ['MODELO DESCONECTADO', 'Abra o Ollama para conversar com a Astra.'],
+    listening: ['OUVINDO VOCÊ', 'Fale naturalmente. Estou ouvindo.'],
+    thinking: ['PROCESSANDO', 'Analisando sua solicitação.'],
+    speaking: ['ASTRA FALANDO', 'Acompanhe a resposta na conversa.']
+  };
+  core.dataset.state = mode;
+  $('status').textContent = labels[mode][0];
+  $('core-hint').textContent = labels[mode][1];
+}
+
+function drawVisualizer(time) {
+  if (!visualContext) return;
+  const ctx = visualContext, width = visualizer.width, center = visualizer.height / 2;
+  ctx.clearRect(0, 0, width, visualizer.height);
+  const mode = core.dataset.state;
+  const data = audioAnalyser && mode === 'speaking' ? new Uint8Array(audioAnalyser.frequencyBinCount) : null;
+  if (data) audioAnalyser.getByteFrequencyData(data);
+  const bars = 45, step = width / bars;
+  for (let i = 0; i < bars; i++) {
+    const distance = Math.abs(i - (bars - 1) / 2) / (bars / 2);
+    const envelope = Math.pow(1 - distance, 1.6);
+    const energy = data ? data[Math.min(data.length - 1, Math.round(i * 2.2))] / 255
+      : mode === 'speaking' ? .38 + .32 * Math.abs(Math.sin(time / 110 + i * .72))
+      : mode === 'listening' ? .22 + .15 * Math.abs(Math.sin(time / 320 + i * .5))
+      : mode === 'thinking' ? .16 + .11 * Math.abs(Math.sin(time / 420 + i * .27)) : .08;
+    const height = 3 + (reducedMotion.matches ? 12 : 76) * energy * envelope;
+    const x = i * step + step / 2;
+    ctx.fillStyle = 'rgba(122, 231, 244, ' + (.22 + .75 * envelope) + ')';
+    ctx.fillRect(x - 1.3, center - height / 2, 2.6, height);
+  }
+  if (!reducedMotion.matches) requestAnimationFrame(drawVisualizer);
+}
+drawVisualizer(0);
 
 async function api(path, data) {
   const options = {headers: {'X-Astra-Token': token}};
@@ -37,7 +81,9 @@ function addMessage(role, text) {
 }
 
 function render() {
-  $('status').textContent = state.ollama_online ? 'SISTEMA ONLINE' : 'OLLAMA DESCONECTADO';
+  if (core.dataset.state === 'idle' || core.dataset.state === 'offline') setCoreState(state.ollama_online ? 'idle' : 'offline');
+  $('core-connection').classList.toggle('disconnected', !state.ollama_online);
+  $('core-connection').lastChild.textContent = state.ollama_online ? ' ATIVA' : ' OFFLINE';
   $('connection').textContent = state.ollama_online ? `${state.models.length} modelo(s) disponível(is)` : 'Abra o Ollama para conversar';
   $('model-badge').textContent = state.model; $('model').textContent = state.model;
   $('computer').textContent = state.system.computer || '—';
@@ -77,20 +123,25 @@ let currentAudioUrl = null;
 let speechRequestId = 0;
 
 function browserSpeak(text, voiceUri) {
-  if (!('speechSynthesis' in window)) { toast('Voz do navegador indisponível.'); return; }
+  if (!('speechSynthesis' in window)) { toast('Voz do navegador indisponível.'); setCoreState('idle'); return; }
   const utterance = new SpeechSynthesisUtterance(text.slice(0,3500));
   utterance.lang = 'pt-BR';
   utterance.rate = Number($('rate').value);
   utterance.pitch = 1 + Number($('pitch').value) / 100;
   const selected = speechSynthesis.getVoices().find(v => v.voiceURI === voiceUri);
   if (selected) utterance.voice = selected;
+  utterance.onstart = () => setCoreState('speaking');
+  utterance.onend = () => setCoreState('idle');
+  utterance.onerror = () => setCoreState('idle');
   speechSynthesis.speak(utterance);
 }
 
 async function speak(text, force = false) {
-  if (!force && !$('speak').checked) return;
+  if (!force && !$('speak').checked) { setCoreState('idle'); return; }
   const requestId = ++speechRequestId;
   if ('speechSynthesis' in window) speechSynthesis.cancel();
+  if (audioSource) { audioSource.disconnect(); audioSource = null; }
+  audioAnalyser = null;
   if (currentAudio) { currentAudio.pause(); currentAudio = null; }
   if (currentAudioUrl) { URL.revokeObjectURL(currentAudioUrl); currentAudioUrl = null; }
   const clean = text.replace(/\[([^\]]+)\]\([^)]*\)/g, '$1').replace(/[`*_#]/g, '').slice(0,3500);
@@ -111,8 +162,31 @@ async function speak(text, force = false) {
     const audio = new Audio(audioUrl);
     currentAudioUrl = audioUrl;
     currentAudio = audio;
-    audio.onended = () => { URL.revokeObjectURL(audioUrl); if (currentAudio === audio) { currentAudioUrl = null; currentAudio = null; } };
-    await currentAudio.play();
+    audio.onended = () => {
+      URL.revokeObjectURL(audioUrl);
+      if (currentAudio === audio) {
+        currentAudioUrl = null; currentAudio = null;
+        if (audioSource) { audioSource.disconnect(); audioSource = null; }
+        audioAnalyser = null; setCoreState('idle');
+      }
+    };
+    try {
+      const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+      if (AudioContextClass) {
+        audioContext ||= new AudioContextClass();
+        audioAnalyser = audioContext.createAnalyser();
+        audioAnalyser.fftSize = 256;
+        audioSource = audioContext.createMediaElementSource(audio);
+        audioSource.connect(audioAnalyser);
+        audioAnalyser.connect(audioContext.destination);
+        await audioContext.resume();
+      }
+    } catch (visualError) {
+      audioAnalyser = null;
+      if (audioSource) { audioSource.disconnect(); audioSource.connect(audioContext.destination); }
+    }
+    await audio.play();
+    setCoreState('speaking');
   } catch (error) {
     if (requestId !== speechRequestId) return;
     toast(`Voz neural indisponível: ${error.message}. Usando voz do navegador.`);
@@ -146,10 +220,10 @@ document.querySelectorAll('.tabs button').forEach(button => button.addEventListe
 $('chat-form').addEventListener('submit', async event => {
   event.preventDefault(); if (busy) return;
   const prompt = $('prompt').value.trim(); if (!prompt) return;
-  busy=true; $('send').disabled=true; $('prompt').value=''; addMessage('user',prompt);
+  busy=true; setCoreState('thinking'); $('send').disabled=true; $('prompt').value=''; addMessage('user',prompt);
   const pending=addMessage('assistant','Processando tarefa…');
   try { const result=await api('/api/chat',{prompt}); pending.remove(); addMessage('assistant',result.answer); speak(result.answer); await refresh(); }
-  catch(error) {pending.remove(); addMessage('assistant',`Erro: ${error.message}`);toast(error.message);}
+  catch(error) {pending.remove(); addMessage('assistant',`Erro: ${error.message}`);toast(error.message);setCoreState('idle');}
   finally {busy=false;$('send').disabled=false;$('prompt').focus();}
 });
 $('prompt').addEventListener('keydown',event=>{if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();$('chat-form').requestSubmit();}});
@@ -159,13 +233,15 @@ $('save-model').addEventListener('click',async()=>{try{await api('/api/settings'
 $('startup').addEventListener('change',async()=>{try{await api('/api/startup',{enabled:$('startup').checked});await refresh();toast('Início com Windows atualizado.');}catch(e){toast(e.message);await refresh();}});
 $('backup-now').addEventListener('click',async()=>{try{const result=await api('/api/backup',{});await refresh();toast(result.cloud ? 'Backup local e no OneDrive concluído.' : `Backup local feito; OneDrive: ${result.cloud_error || result.error}`);}catch(e){toast(e.message);}});
 $('auto-update').addEventListener('change',async()=>{try{await api('/api/auto-update',{enabled:$('auto-update').checked});await refresh();toast('Atualização automática configurada.');}catch(e){toast(e.message);await refresh();}});
-$('test-voice').addEventListener('click',()=>speak('Olá. Eu sou a Astra, seu assistente pessoal. Posso ajudar você hoje?',true));
+const voicePreview = () => speak('Olá. Eu sou a Astra, seu assistente pessoal. Posso ajudar você hoje?', true);
+$('test-voice').addEventListener('click', voicePreview);
+$('core-test').addEventListener('click', voicePreview);
 $('voice').addEventListener('change',saveVoice);$('rate').addEventListener('input',()=>{$('rate-label').textContent=`${Number($('rate').value).toFixed(1)}×`;saveVoice();});$('pitch').addEventListener('input',()=>{$('pitch-label').textContent=`${Number($('pitch').value)} Hz`;saveVoice();});$('speak').addEventListener('change',saveVoice);
 function saveVoice(){prefs.voice=$('voice').value;prefs.rate=$('rate').value;prefs.pitch=$('pitch').value;prefs.speak=$('speak').checked;localStorage.setItem('astra-voice',JSON.stringify(prefs));}
 if(prefs.rate){$('rate').value=prefs.rate;$('rate-label').textContent=`${Number(prefs.rate).toFixed(1)}×`;} if(prefs.pitch){$('pitch').value=prefs.pitch;$('pitch-label').textContent=`${Number(prefs.pitch)} Hz`;} if(prefs.speak!==undefined)$('speak').checked=prefs.speak;
 if('speechSynthesis' in window){speechSynthesis.onvoiceschanged=renderVoiceOptions;renderVoiceOptions();}
 loadNeuralVoices();
 const Recognition=window.SpeechRecognition||window.webkitSpeechRecognition;
-if(Recognition){const rec=new Recognition();rec.lang='pt-BR';rec.interimResults=false;rec.onresult=e=>{$('prompt').value=e.results[0][0].transcript;$('prompt').focus();};rec.onerror=e=>toast(`Microfone: ${e.error}`);$('mic').addEventListener('click',()=>{try{rec.start();toast('Ouvindo…');}catch(e){toast(e.message);}});}else{$('mic').disabled=true;$('mic').title='Ditado indisponível neste navegador';}
+if(Recognition){const rec=new Recognition();rec.lang='pt-BR';rec.interimResults=false;rec.onstart=()=>setCoreState('listening');rec.onend=()=>setCoreState('idle');rec.onresult=e=>{$('prompt').value=e.results[0][0].transcript;$('prompt').focus();};rec.onerror=e=>{setCoreState('idle');toast(`Microfone: ${e.error}`);};$('mic').addEventListener('click',()=>{try{rec.start();toast('Ouvindo…');}catch(e){toast(e.message);}});}else{$('mic').disabled=true;$('mic').title='Ditado indisponível neste navegador';}
 setInterval(()=>$('clock').textContent=new Date().toLocaleString('pt-BR'),1000);$('clock').textContent=new Date().toLocaleString('pt-BR');
 refresh();setInterval(()=>{if(!busy)refresh();},30000);
