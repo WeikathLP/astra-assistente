@@ -469,17 +469,27 @@ PRIVILEGED_ACTIONS = {
 }
 
 
+def decode_command_output(data: bytes) -> str:
+    if not data:
+        return ""
+    if data.startswith((b"\xff\xfe", b"\xfe\xff")):
+        return data.decode("utf-16", "replace")
+    if len(data) >= 8 and data[1::2].count(0) > len(data) // 5:
+        return data.decode("utf-16-le", "replace")
+    return data.decode("oem", "replace")
+
+
 def execute_privileged_action(action: str) -> dict:
     if action not in PRIVILEGED_ACTIONS:
         raise ValueError("Ação administrativa desconhecida")
     steps = []
     for command in PRIVILEGED_ACTIONS[action]:
         try:
-            proc = subprocess.run(command, capture_output=True, text=True, encoding="oem",
-                                  errors="replace", timeout=1800, shell=False,
+            proc = subprocess.run(command, capture_output=True, timeout=1800, shell=False,
                                   creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
             steps.append({"command": command[0], "exit_code": proc.returncode,
-                          "output": (proc.stdout + "\n" + proc.stderr)[-MAX_OUTPUT:]})
+                          "output": (decode_command_output(proc.stdout) + "\n"
+                                     + decode_command_output(proc.stderr))[-MAX_OUTPUT:]})
         except (OSError, subprocess.TimeoutExpired) as exc:
             steps.append({"command": command[0], "error": str(exc)})
     return {"action": action, "steps": steps,

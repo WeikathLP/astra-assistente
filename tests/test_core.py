@@ -52,6 +52,11 @@ class AstraTests(unittest.TestCase):
         self.assertEqual(result["answer"], "Limpei o cache DNS com sucesso.")
         self.assertIsNone(self.app.requested_repair("Como corrigir erros de DNS?"))
 
+    def test_windows_command_output_decodes_sfc_and_dism(self):
+        message = "A Proteção de Recursos do Windows não encontrou erros."
+        self.assertEqual(self.app.decode_command_output(message.encode("utf-16-le")), message)
+        self.assertEqual(self.app.decode_command_output(message.encode("oem")), message)
+
 
 if __name__ == "__main__":
     unittest.main()
