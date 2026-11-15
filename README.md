@@ -35,13 +35,14 @@ Para publicar uma nova versão, altere `version.json`, execute os testes, faça 
 - Abrir arquivos, pastas e programas.
 - Criar pastas, escrever arquivos de texto com backup e mover arquivos dentro do perfil do usuário.
 - Executar diagnósticos: disco, GPU (incluindo temperatura), rede, erros do Visualizador de Eventos, integridade do Windows, arquivos do sistema e `chkdsk /scan`.
-- Executar reparos explícitos: `DISM /RestoreHealth`, `sfc /scannow` e limpeza do cache DNS. Alguns exigem iniciar o aplicativo como administrador.
+- Executar reparos solicitados: `DISM /RestoreHealth`, `sfc /scannow` e limpeza do cache DNS. A Astra solicita a elevação pelo Windows quando necessária, executa o reparo e traz o resultado; você não precisa abrir o prompt.
 - Guardar regras e executar tarefas recorrentes enquanto o aplicativo estiver aberto.
 - Ler respostas com cinco vozes neurais femininas online (Thalita, Francisca, Raquel, Ava e Emma), além das vozes do navegador. Velocidade e tom são ajustáveis.
-- Gravar pelo microfone selecionado em Configurações e transcrever em português no próprio PC. O primeiro uso baixa o modelo Whisper base; clique uma vez para gravar e novamente para transcrever.
+- Gravar pelo microfone selecionado em Configurações e transcrever em português no próprio PC. O primeiro uso baixa o modelo Whisper small; clique uma vez para gravar e novamente para transcrever.
 - Visualizar o núcleo central da interface: ele indica quando a Astra escuta, processa e fala; com voz neural, as barras acompanham o áudio reproduzido.
 - Ouvir uma amostra da voz escolhida. O motor de voz online é instalado automaticamente quando necessário.
 - Iniciar a voz neural assim que o primeiro trecho de áudio chega, sem esperar a frase inteira, e manter o modelo Ollama carregado por 30 minutos entre solicitações.
+- Enviar o idioma português correspondente à voz neural escolhida (Brasil ou Portugal), evitando que vozes multilíngues alternem o idioma da fala.
 
 As ações oferecidas pela Astra não exibem confirmação a cada execução. O Windows ainda pode pedir permissão de administrador. A Astra não possui controle completo de mouse/teclado nem exclusão permanente de arquivos nesta versão. As vozes neurais usam o serviço online do Microsoft Edge: o texto escolhido para fala é enviado para gerar o áudio. O modelo Ollama, a memória e a transcrição do microfone continuam locais. Algumas vozes do navegador também podem usar serviços externos.
 

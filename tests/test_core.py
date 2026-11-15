@@ -3,6 +3,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 class AstraTests(unittest.TestCase):
@@ -29,6 +30,27 @@ class AstraTests(unittest.TestCase):
         result = self.app.execute_tool("verificar disco", "system_snapshot", {})
         self.assertIn("drives", result)
         self.assertEqual(len(self.app.rows("SELECT * FROM actions")), 1)
+
+    def test_repair_uses_elevation_instead_of_returning_commands(self):
+        with patch.object(self.app, "run_elevated_action", return_value={"success": True}) as elevated:
+            result = self.app.run_repair("dns_cache")
+        elevated.assert_called_once_with("repair_dns_cache")
+        self.assertTrue(result["success"])
+        self.assertIn("Não devolva comandos", self.app.system_prompt())
+
+    def test_elevated_helper_rejects_result_outside_data(self):
+        with self.assertRaises(ValueError):
+            self.app.elevated_main("repair_dns_cache", str(Path(self.tmp.name).parent / "outside.json"))
+
+    def test_explicit_repair_runs_even_if_model_only_suggests_commands(self):
+        responses = [{"message": {"content": "Abra o prompt e use ipconfig /flushdns"}},
+                     {"message": {"content": "Limpei o cache DNS com sucesso."}}]
+        with patch.object(self.app, "request_json", side_effect=responses), \
+             patch.object(self.app, "execute_tool", return_value={"success": True}) as execute:
+            result = self.app.chat("Corrija o erro de DNS", save=False)
+        execute.assert_called_once_with("Corrija o erro de DNS", "run_repair", {"name": "dns_cache"})
+        self.assertEqual(result["answer"], "Limpei o cache DNS com sucesso.")
+        self.assertIsNone(self.app.requested_repair("Como corrigir erros de DNS?"))
 
 
 if __name__ == "__main__":
