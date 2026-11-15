@@ -3,6 +3,13 @@ const $ = id => document.getElementById(id);
 let state = null;
 let busy = false;
 const prefs = JSON.parse(localStorage.getItem('astra-voice') || '{}');
+const migratedVoice = prefs.voice === 'edge:pt-BR-ThalitaMultilingualNeural' &&
+  localStorage.getItem('astra-portuguese-voice-migrated') !== 'yes';
+if (migratedVoice) {
+  prefs.voice = 'edge:pt-BR-FranciscaNeural';
+  localStorage.setItem('astra-voice', JSON.stringify(prefs));
+  localStorage.setItem('astra-portuguese-voice-migrated', 'yes');
+}
 const core = $('astra-core');
 const visualizer = $('voice-visualizer');
 const visualContext = visualizer.getContext('2d');
@@ -52,8 +59,17 @@ async function api(path, data) {
   const options = {headers: {'X-Astra-Token': token}};
   if (data !== undefined) { options.method = 'POST'; options.headers['Content-Type'] = 'application/json'; options.body = JSON.stringify(data); }
   const response = await fetch(path, options);
+  if (response.status === 403) {
+    const lastReload = Number(sessionStorage.getItem('astra-session-reload') || 0);
+    if (Date.now() - lastReload > 10000) {
+      sessionStorage.setItem('astra-session-reload', String(Date.now()));
+      window.location.reload();
+    }
+    throw new Error('Sessão da Astra expirada. Recarregando o painel.');
+  }
   const result = await response.json();
   if (!response.ok || result.error) throw new Error(result.error || `HTTP ${response.status}`);
+  sessionStorage.removeItem('astra-session-reload');
   return result;
 }
 
@@ -123,16 +139,38 @@ let speechRequestId = 0;
 
 function browserSpeak(text, voiceUri) {
   if (!('speechSynthesis' in window)) { toast('Voz do navegador indisponível.'); setCoreState('idle'); return; }
+  const voices = speechSynthesis.getVoices();
+  const selected = voices.find(v => v.voiceURI === voiceUri);
+  if (!selected || !selected.lang.toLowerCase().startsWith('pt')) {
+    toast('Selecione uma voz em português nas configurações.');
+    setCoreState('idle');
+    return;
+  }
   const utterance = new SpeechSynthesisUtterance(text.slice(0,3500));
   utterance.lang = 'pt-BR';
   utterance.rate = Number($('rate').value);
   utterance.pitch = 1 + Number($('pitch').value) / 100;
-  const selected = speechSynthesis.getVoices().find(v => v.voiceURI === voiceUri);
-  if (selected) utterance.voice = selected;
+  utterance.voice = selected;
   utterance.onstart = () => setCoreState('speaking');
   utterance.onend = () => setCoreState('idle');
   utterance.onerror = () => setCoreState('idle');
   speechSynthesis.speak(utterance);
+}
+
+function speechText(text) {
+  const clean = text
+    .replace(/```[\s\S]*?```/g, '')
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+    .replace(/https?:\/\/\S+/g, '')
+    .replace(/[\p{Extended_Pictographic}\uFE0F\u200D]/gu, '')
+    .replace(/[`*_#|>]/g, ' ')
+    .replace(/(^|\n)\s*(?:[-•]|\d+[.)])\s*/g, '$1')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (clean.length <= 420) return clean;
+  const excerpt = clean.slice(0, 420);
+  const lastSentence = Math.max(excerpt.lastIndexOf('. '), excerpt.lastIndexOf('! '), excerpt.lastIndexOf('? '));
+  return lastSentence > 180 ? excerpt.slice(0, lastSentence + 1) : excerpt.slice(0, excerpt.lastIndexOf(' ')).trim() + '.';
 }
 
 async function speak(text, force = false) {
@@ -142,10 +180,10 @@ async function speak(text, force = false) {
   if (audioSource) { audioSource.disconnect(); audioSource = null; }
   audioAnalyser = null;
   if (currentAudio) { currentAudio.pause(); currentAudio = null; }
-  const clean = text.replace(/\[([^\]]+)\]\([^)]*\)/g, '$1').replace(/[`*_#]/g, '').slice(0,3500);
+  const clean = speechText(text);
+  if (!clean) { setCoreState('idle'); return; }
   const selected = $('voice').value;
   if (!selected.startsWith('edge:')) return browserSpeak(clean, selected.replace(/^browser:/, ''));
-  let fallbackStarted = false;
   try {
     const prepared = await api('/api/tts/prepare', {
       text: clean, voice: selected.slice(5),
@@ -169,11 +207,8 @@ async function speak(text, force = false) {
       currentAudio = null;
       if (audioSource) { audioSource.disconnect(); audioSource = null; }
       audioAnalyser = null;
-      if (!fallbackStarted) {
-        fallbackStarted = true;
-        toast('Voz neural interrompida. Usando voz do navegador.');
-        browserSpeak(clean, '');
-      }
+      toast('A voz online foi interrompida. Tente novamente.');
+      setCoreState('idle');
     };
     try {
       const AudioContextClass = window.AudioContext || window.webkitAudioContext;
@@ -191,21 +226,20 @@ async function speak(text, force = false) {
       if (audioSource) { audioSource.disconnect(); audioSource.connect(audioContext.destination); }
     }
     await audio.play();
-    if (!fallbackStarted) setCoreState('speaking');
+    if (currentAudio === audio) setCoreState('speaking');
   } catch (error) {
     if (requestId !== speechRequestId) return;
-    if (fallbackStarted) return;
-    toast(`Voz neural indisponível: ${error.message}. Usando voz do navegador.`);
-    browserSpeak(clean, '');
+    toast(`Voz online indisponível: ${error.message}`);
+    setCoreState('idle');
   }
 }
 
 function renderVoiceOptions() {
-  const previous = prefs.voice || (neuralVoices.length ? 'edge:pt-BR-ThalitaMultilingualNeural' : $('voice').value);
+  const previous = prefs.voice || (neuralVoices.length ? 'edge:pt-BR-FranciscaNeural' : $('voice').value);
   const neural = el('optgroup'); neural.label = 'VOZES NEURAIS ONLINE';
   neuralVoices.forEach(v => {const option=el('option','',v.label);option.value=`edge:${v.name}`;neural.append(option);});
   const local = el('optgroup'); local.label = 'VOZES DO NAVEGADOR';
-  const browsers = 'speechSynthesis' in window ? speechSynthesis.getVoices().filter(v=>v.lang.startsWith('pt')) : [];
+  const browsers = 'speechSynthesis' in window ? speechSynthesis.getVoices().filter(v=>v.lang.toLowerCase().startsWith('pt')) : [];
   browsers.forEach(v => {const option=el('option','',`${v.name} (${v.lang})`);option.value=`browser:${v.voiceURI}`;local.append(option);});
   $('voice').replaceChildren(neural,local);
   if (previous && [...$('voice').options].some(o=>o.value===previous)) $('voice').value=previous;
@@ -216,6 +250,7 @@ async function loadNeuralVoices() {
   try { neuralVoices = (await api('/api/voices')).voices; }
   catch (error) { neuralVoices = []; }
   renderVoiceOptions();
+  if (migratedVoice) toast('Voz alterada para Francisca para manter o português nas respostas. Você pode trocar em Configurações.');
 }
 
 document.querySelectorAll('.tabs button').forEach(button => button.addEventListener('click', () => {

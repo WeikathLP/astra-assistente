@@ -10,6 +10,8 @@ Astra é um aplicativo local com painel no navegador, modelo de IA servido pelo 
 
 Não é necessária chave de API. As conversas, regras, agendamentos e registros ficam em `%LOCALAPPDATA%\Astra\astra.db` no computador. O programa ouve apenas em `127.0.0.1` e usa um token de sessão para as ações no painel.
 
+As respostas são resumidas para leitura rápida. A fala lê apenas um trecho curto, sem emojis, links ou blocos de código. A voz padrão é Francisca em português brasileiro; Thalita continua disponível em **Configurações**, mas é multilíngue e pode alternar a pronúncia em respostas longas.
+
 ## Backup e recuperação
 
 A Astra faz cópias consistentes do SQLite ao iniciar e a cada cinco minutos enquanto estiver aberta. Mantém até 30 cópias em `%LOCALAPPDATA%\Astra\backups` e até 90 cópias em `%OneDrive%\Astra\Backups`. Cada cópia tem um arquivo `.json` com SHA-256. A aba **Backup e updates** mostra o estado e permite fazer uma cópia na hora. Os backups contêm conversas, regras, agendamentos e histórico de ações; ficam fora do GitHub. O OneDrive precisa estar conectado e sincronizando para a cópia remota sobreviver a um problema no PC.

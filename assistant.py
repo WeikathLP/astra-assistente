@@ -51,8 +51,8 @@ TRANSCRIBE_LOCK = threading.Lock()
 MIC_SESSION = None
 WHISPER_MODEL = None
 NEURAL_FALLBACK = [
-    {"name": "pt-BR-ThalitaMultilingualNeural", "label": "Thalita · Brasil · neural"},
-    {"name": "pt-BR-FranciscaNeural", "label": "Francisca · Brasil · neural"},
+    {"name": "pt-BR-FranciscaNeural", "label": "Francisca · Brasil · português fixo"},
+    {"name": "pt-BR-ThalitaMultilingualNeural", "label": "Thalita · Brasil · multilíngue"},
     {"name": "pt-PT-RaquelNeural", "label": "Raquel · Portugal · neural"},
     {"name": "en-US-AvaMultilingualNeural", "label": "Ava · multilíngue · neural"},
     {"name": "en-US-EmmaMultilingualNeural", "label": "Emma · multilíngue · neural"},
@@ -662,6 +662,12 @@ def system_prompt() -> str:
     rules = rows("SELECT text FROM rules ORDER BY id")
     rule_text = "\n".join(f"- {r['text']}" for r in rules) or "(nenhuma regra ainda)"
     return ("Você é Astra, assistente pessoal do usuário no Windows. Responda em português claro. "
+            "Seja direta: após analisar o resultado, dê a conclusão e no máximo três pontos essenciais, "
+            "em até 90 palavras no total, salvo se o usuário pedir detalhes. "
+            "Quando houver uma ação útil que você possa executar, sugira apenas a próxima ação concreta. "
+            "Não reproduza saídas brutas, listas extensas, comandos, caminhos ou detalhes técnicos irrelevantes. "
+            "Escreva para leitura em voz alta: frases naturais, sem emojis, ícones, descrições visuais de símbolos "
+            "ou enfeites de Markdown. Use português brasileiro também nos termos de ligação. "
             "Use as ferramentas para conferir fatos sobre o PC e executar tarefas autorizadas. "
             "Quando o usuário pedir uma correção, execute a ferramenta de reparo aplicável e informe o resultado real. "
             "Se um diagnóstico apontar problema que um reparo disponível corrige e o usuário pediu para corrigir, execute o reparo na mesma tarefa. "
