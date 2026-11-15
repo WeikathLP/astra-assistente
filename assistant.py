@@ -41,6 +41,11 @@ BACKUP_LOCK = threading.Lock()
 DIRTY = threading.Event()
 VOICE_LOCK = threading.Lock()
 VOICE_CACHE = None
+MIC_LOCK = threading.RLock()
+MIC_DEP_LOCK = threading.Lock()
+TRANSCRIBE_LOCK = threading.Lock()
+MIC_SESSION = None
+WHISPER_MODEL = None
 NEURAL_FALLBACK = [
     {"name": "pt-BR-ThalitaMultilingualNeural", "label": "Thalita · Brasil · neural"},
     {"name": "pt-BR-FranciscaNeural", "label": "Francisca · Brasil · neural"},
@@ -209,6 +214,131 @@ def synthesize_voice(text: str, name: str, rate: int, pitch: int) -> bytes:
         return b"".join(chunks)
 
     return asyncio.run(generate())
+
+
+def microphone_module(name: str):
+    try:
+        return importlib.import_module(name)
+    except ImportError:
+        with MIC_DEP_LOCK:
+            try:
+                return importlib.import_module(name)
+            except ImportError:
+                python = Path(sys.executable).with_name("python.exe")
+                if not python.is_file():
+                    python = Path(sys.executable)
+                package = "sounddevice==0.5.6" if name == "sounddevice" else "faster-whisper==1.2.1"
+                proc = subprocess.run([str(python), "-m", "pip", "install", "--user", package],
+                                      capture_output=True, text=True, timeout=240,
+                                      creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                if proc.returncode:
+                    raise RuntimeError("Não foi possível instalar o reconhecimento de voz: " + proc.stderr[-500:])
+                importlib.invalidate_caches()
+                return importlib.import_module(name)
+
+
+def microphones() -> dict:
+    sd = microphone_module("sounddevice")
+    devices = []
+    default_index = sd.default.device[0]
+    for index, device in enumerate(sd.query_devices()):
+        if device["max_input_channels"] < 1:
+            continue
+        host = sd.query_hostapis(device["hostapi"])["name"]
+        key = f"{host}|{device['name']}"
+        devices.append({"id": key, "name": device["name"], "host": host,
+                        "default": index == default_index})
+    selected = setting("microphone_device")
+    if not any(device["id"] == selected for device in devices):
+        selected = next((device["id"] for device in devices if device["default"]), "")
+    return {"devices": devices, "selected": selected}
+
+
+def start_recording() -> dict:
+    global MIC_SESSION
+    sd = microphone_module("sounddevice")
+    selected = microphones()["selected"]
+    with MIC_LOCK:
+        if MIC_SESSION is not None:
+            raise ValueError("O microfone já está gravando")
+        for index, device in enumerate(sd.query_devices()):
+            key = f"{sd.query_hostapis(device['hostapi'])['name']}|{device['name']}"
+            if key == selected and device["max_input_channels"] > 0:
+                break
+        else:
+            raise ValueError("Nenhum microfone disponível")
+        rate = int(device["default_samplerate"])
+        chunks = []
+        started = time.monotonic()
+
+        def capture(indata, frames, timing, status):
+            if time.monotonic() - started >= 30:
+                raise sd.CallbackStop
+            chunks.append(indata[:, 0].copy())
+
+        stream = None
+        try:
+            stream = sd.InputStream(samplerate=rate, channels=1, dtype="float32",
+                                    device=index, callback=capture)
+            stream.start()
+        except Exception as exc:
+            if stream is not None:
+                stream.close()
+            raise RuntimeError(f"Não foi possível abrir {device['name']}: {exc}") from exc
+        MIC_SESSION = {"stream": stream, "chunks": chunks, "rate": rate, "device": device["name"]}
+        timer = threading.Timer(35, discard_recording, args=(MIC_SESSION,))
+        timer.daemon = True
+        MIC_SESSION["timer"] = timer
+        timer.start()
+        return {"recording": True, "microphone": device["name"]}
+
+
+def discard_recording(session: dict):
+    global MIC_SESSION
+    with MIC_LOCK:
+        if MIC_SESSION is not session:
+            return
+        MIC_SESSION = None
+    session["stream"].stop()
+    session["stream"].close()
+
+
+def stop_recording() -> dict:
+    global MIC_SESSION, WHISPER_MODEL
+    with MIC_LOCK:
+        session = MIC_SESSION
+        if session is None:
+            raise ValueError("Nenhuma gravação em andamento")
+        MIC_SESSION = None
+    session["timer"].cancel()
+    try:
+        session["stream"].stop()
+    finally:
+        session["stream"].close()
+    numpy = importlib.import_module("numpy")
+    if not session["chunks"]:
+        raise ValueError("Nenhum áudio captado pelo microfone")
+    audio = numpy.concatenate(session["chunks"])
+    rate = session["rate"]
+    if len(audio) < rate // 2:
+        raise ValueError("Gravação curta demais; fale por pelo menos um segundo")
+    if float(numpy.sqrt(numpy.mean(audio * audio))) < 0.00015:
+        raise ValueError("Microfone sem sinal de voz; escolha outro em Configurações")
+    if rate != 16000:
+        old = numpy.arange(len(audio), dtype=numpy.float64) / rate
+        new = numpy.arange(round(len(audio) * 16000 / rate), dtype=numpy.float64) / 16000
+        audio = numpy.interp(new, old, audio).astype(numpy.float32)
+    with TRANSCRIBE_LOCK:
+        if WHISPER_MODEL is None:
+            model_class = microphone_module("faster_whisper").WhisperModel
+            WHISPER_MODEL = model_class("base", device="cpu", compute_type="int8",
+                                        download_root=str(DATA / "models"))
+        segments, _ = WHISPER_MODEL.transcribe(audio, language="pt", beam_size=3,
+                                                vad_filter=True, condition_on_previous_text=False)
+        transcript = " ".join(segment.text.strip() for segment in segments).strip()
+    if not transcript:
+        raise ValueError("Não identifiquei fala; tente novamente mais perto do microfone")
+    return {"text": transcript, "microphone": session["device"]}
 
 
 def maintenance():
@@ -559,6 +689,11 @@ class Handler(BaseHTTPRequestHandler):
                             "system": disk_report()})
         elif self.path == "/api/voices" and self.authorized():
             self.send_json({"voices": neural_voices()})
+        elif self.path == "/api/microphones" and self.authorized():
+            try:
+                self.send_json(microphones())
+            except Exception as exc:
+                self.send_json({"error": str(exc)}, 503)
         else:
             self.send_json({"error": "Não encontrado"}, 404)
 
@@ -584,6 +719,26 @@ class Handler(BaseHTTPRequestHandler):
                     raise
                 except Exception as exc:
                     return self.send_json({"error": str(exc)}, 502)
+            if self.path == "/api/microphone/select":
+                selected = str(body.get("id", ""))
+                if selected not in {device["id"] for device in microphones()["devices"]}:
+                    raise ValueError("Microfone não encontrado")
+                set_setting("microphone_device", selected)
+                return self.send_json({"selected": selected})
+            if self.path == "/api/record/start":
+                try:
+                    return self.send_json(start_recording())
+                except ValueError:
+                    raise
+                except Exception as exc:
+                    return self.send_json({"error": str(exc)}, 503)
+            if self.path == "/api/record/stop":
+                try:
+                    return self.send_json(stop_recording())
+                except ValueError:
+                    raise
+                except Exception as exc:
+                    return self.send_json({"error": str(exc)}, 503)
             if self.path == "/api/chat":
                 prompt = str(body.get("prompt", "")).strip()
                 if not prompt or len(prompt) > 10_000:

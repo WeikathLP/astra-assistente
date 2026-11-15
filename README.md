@@ -37,11 +37,12 @@ Para publicar uma nova versão, altere `version.json`, execute os testes, faça 
 - Executar diagnósticos: disco, GPU (incluindo temperatura), rede, erros do Visualizador de Eventos, integridade do Windows, arquivos do sistema e `chkdsk /scan`.
 - Executar reparos explícitos: `DISM /RestoreHealth`, `sfc /scannow` e limpeza do cache DNS. Alguns exigem iniciar o aplicativo como administrador.
 - Guardar regras e executar tarefas recorrentes enquanto o aplicativo estiver aberto.
-- Ler respostas com cinco vozes neurais femininas online (Thalita, Francisca, Raquel, Ava e Emma), além das vozes do navegador. Velocidade e tom são ajustáveis; o ditado depende do navegador.
+- Ler respostas com cinco vozes neurais femininas online (Thalita, Francisca, Raquel, Ava e Emma), além das vozes do navegador. Velocidade e tom são ajustáveis.
+- Gravar pelo microfone selecionado em Configurações e transcrever em português no próprio PC. O primeiro uso baixa o modelo Whisper base; clique uma vez para gravar e novamente para transcrever.
 - Visualizar o núcleo central da interface: ele indica quando a Astra escuta, processa e fala; com voz neural, as barras acompanham o áudio reproduzido.
 - Ouvir uma amostra da voz escolhida. O motor de voz online é instalado automaticamente quando necessário.
 
-As ações oferecidas pela Astra não exibem confirmação a cada execução. O Windows ainda pode pedir permissão de administrador. A Astra não possui controle completo de mouse/teclado nem exclusão permanente de arquivos nesta versão. As vozes neurais usam o serviço online do Microsoft Edge: o texto escolhido para fala é enviado para gerar o áudio. O modelo Ollama e a memória continuam locais. O ditado e algumas vozes do navegador também podem usar serviços externos.
+As ações oferecidas pela Astra não exibem confirmação a cada execução. O Windows ainda pode pedir permissão de administrador. A Astra não possui controle completo de mouse/teclado nem exclusão permanente de arquivos nesta versão. As vozes neurais usam o serviço online do Microsoft Edge: o texto escolhido para fala é enviado para gerar o áudio. O modelo Ollama, a memória e a transcrição do microfone continuam locais. Algumas vozes do navegador também podem usar serviços externos.
 
 ## Executar testes
 

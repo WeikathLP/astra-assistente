@@ -241,7 +241,59 @@ function saveVoice(){prefs.voice=$('voice').value;prefs.rate=$('rate').value;pre
 if(prefs.rate){$('rate').value=prefs.rate;$('rate-label').textContent=`${Number(prefs.rate).toFixed(1)}×`;} if(prefs.pitch){$('pitch').value=prefs.pitch;$('pitch-label').textContent=`${Number(prefs.pitch)} Hz`;} if(prefs.speak!==undefined)$('speak').checked=prefs.speak;
 if('speechSynthesis' in window){speechSynthesis.onvoiceschanged=renderVoiceOptions;renderVoiceOptions();}
 loadNeuralVoices();
-const Recognition=window.SpeechRecognition||window.webkitSpeechRecognition;
-if(Recognition){const rec=new Recognition();rec.lang='pt-BR';rec.interimResults=false;rec.onstart=()=>setCoreState('listening');rec.onend=()=>setCoreState('idle');rec.onresult=e=>{$('prompt').value=e.results[0][0].transcript;$('prompt').focus();};rec.onerror=e=>{setCoreState('idle');toast(`Microfone: ${e.error}`);};$('mic').addEventListener('click',()=>{try{rec.start();toast('Ouvindo…');}catch(e){toast(e.message);}});}else{$('mic').disabled=true;$('mic').title='Ditado indisponível neste navegador';}
+async function loadMicrophones() {
+  try {
+    const result = await api('/api/microphones');
+    $('microphone-device').replaceChildren(...result.devices.map(device => {
+      const option = el('option', '', `${device.name} · ${device.host}${device.default ? ' · padrão do Windows' : ''}`);
+      option.value = device.id; return option;
+    }));
+    $('microphone-device').value = result.selected;
+  } catch (error) { $('microphone-device').replaceChildren(el('option', '', `Erro: ${error.message}`)); }
+}
+$('microphone-device').addEventListener('change', async () => {
+  try { await api('/api/microphone/select', {id: $('microphone-device').value}); toast('Microfone selecionado.'); }
+  catch (error) { toast(error.message); loadMicrophones(); }
+});
+let recording = false;
+let micBusy = false;
+let recordingTimer = null;
+function micState(active) {
+  recording = active;
+  $('mic').classList.toggle('recording', active);
+  $('mic').setAttribute('aria-pressed', String(active));
+  $('mic').setAttribute('aria-label', active ? 'Terminar gravação e transcrever' : 'Iniciar gravação de voz');
+  $('mic').title = active ? 'Clique para terminar e transcrever' : 'Clique para gravar';
+}
+async function toggleMicrophone() {
+  if (micBusy) return;
+  micBusy = true;
+  try {
+    if (!recording) {
+      const result = await api('/api/record/start', {});
+      micState(true);
+      setCoreState('listening');
+      toast(`Gravando com ${result.microphone}. Clique novamente para transcrever.`);
+      recordingTimer = setTimeout(toggleMicrophone, 25000);
+    } else {
+      clearTimeout(recordingTimer);
+      micState(false);
+      setCoreState('thinking');
+      toast('Transcrevendo no seu computador…');
+      const result = await api('/api/record/stop', {});
+      $('prompt').value = [ $('prompt').value.trim(), result.text ].filter(Boolean).join(' ');
+      $('prompt').focus();
+      toast('Fala transcrita. Revise o texto e pressione Enviar.');
+      setCoreState('idle');
+    }
+  } catch (error) {
+    clearTimeout(recordingTimer);
+    micState(false);
+    setCoreState('idle');
+    toast(`Microfone: ${error.message}`);
+  } finally { micBusy = false; }
+}
+$('mic').addEventListener('click', toggleMicrophone);
+loadMicrophones();
 setInterval(()=>$('clock').textContent=new Date().toLocaleString('pt-BR'),1000);$('clock').textContent=new Date().toLocaleString('pt-BR');
 refresh();setInterval(()=>{if(!busy)refresh();},30000);
