@@ -1,5 +1,6 @@
 import io
 import json
+import shutil
 import sqlite3
 import tempfile
 import unittest
@@ -51,6 +52,15 @@ class BackupUpdateTests(unittest.TestCase):
                 staged = updater.stage_release({"version": "0.1.1", "url": "https://api.github.com/example"})
             self.assertTrue((staged / "assistant.py").is_file())
             self.assertEqual(json.loads((staged / "version.json").read_text())["version"], "0.1.1")
+            install = Path(root) / "install"
+            for name in updater.APP_FILES:
+                destination = install / name
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(updater.ROOT / name, destination)
+            with patch.object(updater, "DATA", Path(root)), patch.object(updater, "ROOT", install), patch.object(updater, "VERSION_FILE", install / "version.json"):
+                rollback = updater.apply_staged(staged)
+            self.assertEqual(json.loads((install / "version.json").read_text())["version"], "0.1.1")
+            self.assertEqual(json.loads((rollback / "version.json").read_text())["version"], "0.1.0")
 
 
 if __name__ == "__main__":
