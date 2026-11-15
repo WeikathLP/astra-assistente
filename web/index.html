@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#06111d">
+  <title>ASTRA · Assistente pessoal</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <script>window.ASTRA_TOKEN = "__TOKEN__";</script>
+  <div class="shell">
+    <aside class="rail">
+      <div class="brand"><span class="brand-mark">◈</span><div><strong>ASTRA</strong><small>SISTEMA PESSOAL</small></div></div>
+      <div class="orb-wrap"><div class="orb"><span></span><span></span><span></span><b>◉</b></div><p id="status">INICIALIZANDO</p></div>
+      <div class="rail-bottom"><div class="label">NÚCLEO LOCAL</div><div id="model-badge" class="model-badge">—</div><div id="connection" class="connection">Verificando Ollama…</div></div>
+    </aside>
+    <main>
+      <header><div><span class="eyebrow">PAINEL DE COMANDO</span><h1>Seu assistente no Windows<span class="cursor">_</span></h1></div><div class="clock" id="clock"></div></header>
+      <nav class="tabs" aria-label="Seções"><button class="active" data-tab="chat">CONVERSA</button><button data-tab="rules">MEMÓRIA</button><button data-tab="jobs">AUTOMAÇÕES</button><button data-tab="activity">ATIVIDADE</button><button data-tab="maintenance">BACKUP E UPDATES</button><button data-tab="settings">CONFIGURAÇÕES</button></nav>
+      <section id="tab-chat" class="tab active">
+        <div class="chat-card"><div class="section-head"><div><span class="eyebrow">CANAL DIRETO</span><h2>Conversa com Astra</h2></div><span class="live-dot">● LOCAL</span></div><div id="messages" class="messages"><div class="empty">Olá. Posso verificar seu computador, abrir arquivos e aplicativos, executar diagnósticos e seguir as regras que você salvar na memória.</div></div><form id="chat-form" class="composer"><button type="button" id="mic" title="Ditado pelo navegador">🎙</button><textarea id="prompt" rows="2" placeholder="Peça uma tarefa ou um diagnóstico..."></textarea><button type="submit" id="send">ENVIAR ↗</button></form><div class="hint">Enter envia · Shift+Enter quebra linha · Ações executadas aparecem em Atividade</div></div>
+        <div class="metric-grid"><div class="metric"><span>COMPUTADOR</span><strong id="computer">—</strong></div><div class="metric"><span>DISCO C: LIVRE</span><strong id="disk">—</strong></div><div class="metric"><span>MODELO</span><strong id="model">—</strong></div></div>
+      </section>
+      <section id="tab-rules" class="tab"><div class="panel"><div class="section-head"><div><span class="eyebrow">PREFERÊNCIAS PERSISTENTES</span><h2>Memória de regras</h2></div></div><p>Escreva regras que a Astra deve seguir em todas as conversas. Elas ficam salvas apenas neste PC.</p><form id="rule-form" class="row-form"><input id="rule-text" maxlength="2000" placeholder="Ex.: Sempre faça backup antes de alterar um arquivo"><button>SALVAR REGRA</button></form><div id="rules-list" class="item-list"></div></div></section>
+      <section id="tab-jobs" class="tab"><div class="panel"><div class="section-head"><div><span class="eyebrow">ROTINAS AUTÔNOMAS</span><h2>Automações</h2></div></div><p>Agende uma instrução recorrente. A tarefa roda enquanto a Astra estiver aberta, sem pedir confirmação a cada execução.</p><form id="job-form" class="job-form"><input id="job-prompt" maxlength="2000" placeholder="Ex.: Verifique o espaço livre do disco C:"><label>A cada <input id="job-interval" type="number" min="5" max="10080" value="60"> minutos</label><button>CRIAR ROTINA</button></form><div id="jobs-list" class="item-list"></div></div></section>
+      <section id="tab-activity" class="tab"><div class="panel"><div class="section-head"><div><span class="eyebrow">REGISTRO AUDITÁVEL</span><h2>Ações executadas</h2></div></div><div id="actions-list" class="item-list"></div></div></section>
+      <section id="tab-maintenance" class="tab"><div class="panel"><div class="section-head"><div><span class="eyebrow">RECUPERAÇÃO E DISTRIBUIÇÃO</span><h2>Backup e atualizações</h2></div></div><div class="settings-grid"><div class="field"><label>Memória da Astra</label><div id="backup-status" class="status-box">Verificando backups…</div><small id="backup-path"></small><button id="backup-now">FAZER BACKUP AGORA</button><small>Backups locais e no OneDrive. Para restaurar em outro PC, baixe o projeto e execute <code>python backup.py restore CAMINHO_DO_BACKUP.sqlite3</code> com a Astra fechada.</small></div><div class="field"><label>Versão e releases</label><div id="update-status" class="status-box">Verificando versão…</div><label class="check"><input id="auto-update" type="checkbox" checked> Baixar e instalar novas releases automaticamente</label><small>Astra verifica a release mais recente a cada seis horas e reinicia quando terminar a atualização. A memória fica fora dos arquivos atualizados.</small></div></div></div></section>
+      <section id="tab-settings" class="tab"><div class="panel"><div class="section-head"><div><span class="eyebrow">PERSONALIZAÇÃO</span><h2>Configurações</h2></div></div><div class="settings-grid"><div class="field"><label for="model-input">Modelo Ollama</label><input id="model-input" list="models" placeholder="qwen3.5:9b"><datalist id="models"></datalist><button id="save-model">SALVAR MODELO</button><small>O Ollama precisa estar instalado, ativo e com o modelo baixado.</small><label class="check"><input id="startup" type="checkbox"> Iniciar Astra com o Windows</label><small>Permite executar rotinas agendadas após entrar no Windows.</small></div><div class="field"><label for="voice">Voz do sistema</label><select id="voice"></select><label for="rate">Velocidade da fala <span id="rate-label">1.0×</span></label><input id="rate" type="range" min="0.7" max="1.5" step="0.1" value="1"><label class="check"><input id="speak" type="checkbox" checked> Ler respostas em voz alta</label><button id="test-voice">TESTAR VOZ</button><small>As vozes disponíveis dependem do navegador e do Windows. O ditado pode usar serviços do navegador.</small></div></div></div></section>
+      <div id="toast" role="status"></div>
+    </main>
+  </div>
+  <script src="/app.js"></script>
+</body>
+</html>
